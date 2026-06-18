@@ -676,3 +676,165 @@ func TestCopySkipsExistingDestination(t *testing.T) {
 		t.Errorf("mode should return to modeNormal even when dst exists, got %v", model.(Model).mode)
 	}
 }
+
+// --- auto-refresh tests ---
+
+// readDirGroups returns a groups function that reads live from disk under root.
+func readDirGroups(root string) func() []finder.SkillGroup {
+	return func() []finder.SkillGroup {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return nil
+		}
+		var skills []string
+		for _, e := range entries {
+			if e.IsDir() {
+				skills = append(skills, e.Name())
+			}
+		}
+		if len(skills) == 0 {
+			return nil
+		}
+		return []finder.SkillGroup{{Source: root, Skills: skills}}
+	}
+}
+
+func TestRefreshAfterDelete(t *testing.T) {
+	srcRoot := t.TempDir()
+	skillName := "delete-me"
+	if err := os.Mkdir(filepath.Join(srcRoot, skillName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	groups := readDirGroups(srcRoot)
+	m := New(groups, fakeHome, fakeCwd)
+	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
+	m = next.(Model)
+
+	var model tea.Model = m
+	var cmd tea.Cmd
+	model, _ = model.(Model).Update(space())    // select
+	model, _ = model.(Model).Update(runes("D")) // enter confirm
+	model, cmd = model.(Model).Update(runes("D")) // confirm delete
+
+	if cmd == nil {
+		t.Fatal("delete confirmation should return a refresh cmd")
+	}
+	msg := cmd()
+	refreshed, ok := msg.(refreshedMsg)
+	if !ok {
+		t.Fatalf("expected refreshedMsg from refresh cmd, got %T", msg)
+	}
+	// Skill dir was deleted; re-walk returns no entries.
+	model, _ = model.(Model).Update(refreshed)
+	if len(model.(Model).entries) != 0 {
+		t.Errorf("after delete+refresh, expected 0 entries, got %d", len(model.(Model).entries))
+	}
+}
+
+func TestRefreshAfterCopy(t *testing.T) {
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	skillName := "copy-me"
+	if err := os.Mkdir(filepath.Join(srcRoot, skillName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRoot, skillName, "skill.md"), []byte("# hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agentsRoot := filepath.Join(dstRoot, ".agents", "skills")
+
+	// Dynamic groups reads from srcRoot and agentsRoot after copy.
+	groups := func() []finder.SkillGroup {
+		var out []finder.SkillGroup
+		for _, root := range []string{srcRoot, agentsRoot} {
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				continue
+			}
+			var skills []string
+			for _, e := range entries {
+				if e.IsDir() {
+					skills = append(skills, e.Name())
+				}
+			}
+			if len(skills) > 0 {
+				out = append(out, finder.SkillGroup{Source: root, Skills: skills})
+			}
+		}
+		return out
+	}
+
+	m := New(groups, fakeHome, dstRoot)
+	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
+	m = next.(Model)
+
+	var model tea.Model = m
+	var cmd tea.Cmd
+	model, _ = model.(Model).Update(runes("C"))
+	model, cmd = model.(Model).Update(runes("1")) // copy to .agents/skills
+
+	if cmd == nil {
+		t.Fatal("copy should return a refresh cmd")
+	}
+	msg := cmd()
+	refreshed, ok := msg.(refreshedMsg)
+	if !ok {
+		t.Fatalf("expected refreshedMsg from refresh cmd, got %T", msg)
+	}
+	// After copy + refresh, skill appears in both src and dst.
+	model, _ = model.(Model).Update(refreshed)
+	if len(model.(Model).entries) < 2 {
+		t.Errorf("after copy+refresh, expected >= 2 entries, got %d", len(model.(Model).entries))
+	}
+}
+
+func TestRefreshPreservesSelections(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space()) // select cursor row (databricks-core)
+
+	// Dispatch refresh with identical entries.
+	model, _ = model.(Model).Update(refreshedMsg{entries: flattenGroups(testGroups(), fakeHome)})
+
+	if !strings.Contains(model.(Model).View(), "[x]") {
+		t.Errorf("selection should be preserved by identity across refresh:\n%s", model.(Model).View())
+	}
+}
+
+func TestRefreshDropsRemovedSelection(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space()) // select databricks-core
+
+	// Refresh without databricks-core.
+	trimmed := []finder.SkillGroup{
+		{Source: "/home/user/.agents/skills", Skills: []string{"openspec-explore"}},
+		{Source: "/home/user/.claude/skills", Skills: []string{"fastapi"}},
+	}
+	model, _ = model.(Model).Update(refreshedMsg{entries: flattenGroups(trimmed, fakeHome)})
+
+	if strings.Contains(model.(Model).View(), "[x]") {
+		t.Errorf("selection for removed entry should be dropped after refresh:\n%s", model.(Model).View())
+	}
+	if len(model.(Model).selected) != 0 {
+		t.Errorf("selected map should be empty, got %v", model.(Model).selected)
+	}
+}
+
+func TestRefreshPreservesFilter(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(runes("fast")) // set filter
+
+	// Dispatch refresh with full entries.
+	model, _ = model.(Model).Update(refreshedMsg{entries: flattenGroups(testGroups(), fakeHome)})
+
+	if model.(Model).filter != "fast" {
+		t.Errorf("filter should be preserved across refresh, got %q", model.(Model).filter)
+	}
+	if !strings.Contains(model.(Model).View(), "fastapi") {
+		t.Errorf("filter should still be applied after refresh:\n%s", model.(Model).View())
+	}
+}

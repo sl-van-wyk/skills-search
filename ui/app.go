@@ -53,6 +53,12 @@ type foundMsg struct {
 	entries []SkillEntry
 }
 
+// refreshedMsg carries the result of a silent background re-walk triggered
+// after a copy or delete action. Unlike foundMsg it does not affect loading state.
+type refreshedMsg struct {
+	entries []SkillEntry
+}
+
 // Model is the bubbletea model for the skills browser.
 type Model struct {
 	find     func() []SkillEntry
@@ -121,12 +127,40 @@ func (m Model) Init() tea.Cmd {
 	}
 }
 
+// refreshCmd returns a Cmd that re-walks the filesystem in the background and
+// delivers a refreshedMsg. Unlike Init, it never sets loading state.
+func (m Model) refreshCmd() tea.Cmd {
+	find := m.find
+	return func() tea.Msg { return refreshedMsg{entries: find()} }
+}
+
 // Update handles incoming messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case foundMsg:
 		m.entries = msg.entries
 		m.loading = false
+		m.clampCursor()
+		m.clampOffset()
+		return m, nil
+
+	case refreshedMsg:
+		type identity struct{ name, fullSource string }
+		kept := make(map[identity]bool, len(m.selected))
+		for idx := range m.selected {
+			if idx < len(m.entries) {
+				e := m.entries[idx]
+				kept[identity{e.Name, e.FullSource}] = true
+			}
+		}
+		m.entries = msg.entries
+		newSelected := make(map[int]bool)
+		for i, e := range m.entries {
+			if kept[identity{e.Name, e.FullSource}] {
+				newSelected[i] = true
+			}
+		}
+		m.selected = newSelected
 		m.clampCursor()
 		m.clampOffset()
 		return m, nil
@@ -166,7 +200,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 			m.clampCursor()
 			m.clampOffset()
-			return m, nil
+			return m, m.refreshCmd()
 		}
 		m.mode = modeNormal
 		return m, nil
@@ -177,18 +211,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "1":
 				m.executeCopy([]string{filepath.Join(m.cwd, ".agents", "skills")})
 				m.mode = modeNormal
-				return m, nil
+				return m, m.refreshCmd()
 			case "2":
 				m.executeCopy([]string{filepath.Join(m.cwd, ".claude", "skills")})
 				m.mode = modeNormal
-				return m, nil
+				return m, m.refreshCmd()
 			case "3":
 				m.executeCopy([]string{
 					filepath.Join(m.cwd, ".agents", "skills"),
 					filepath.Join(m.cwd, ".claude", "skills"),
 				})
 				m.mode = modeNormal
-				return m, nil
+				return m, m.refreshCmd()
 			}
 		}
 		m.mode = modeNormal
