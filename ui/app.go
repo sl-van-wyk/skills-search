@@ -3,6 +3,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -28,12 +30,22 @@ var (
 	filterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	hintStyle   = lipgloss.NewStyle().Faint(true)
 	emptyStyle  = lipgloss.NewStyle().Faint(true)
+	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 )
 
-// SkillEntry is a single skill with its tilde-shortened source path.
+type mode int
+
+const (
+	modeNormal mode = iota
+	modeConfirmDelete
+	modeChooseCopyDest
+)
+
+// SkillEntry is a single skill with its display path and real filesystem path.
 type SkillEntry struct {
 	Name        string
-	ShortSource string
+	ShortSource string // tilde-shortened, for display
+	FullSource  string // unexpanded real path, for filesystem operations
 }
 
 // foundMsg carries the result of the asynchronous skill walk.
@@ -53,11 +65,14 @@ type Model struct {
 	height   int
 	loading  bool
 	quitting bool
+	mode     mode
+	cwd      string // working directory at startup, used as copy-destination root
 }
 
 // New returns a Model. find is called once asynchronously after the program
-// starts. home is used to tilde-shorten source paths.
-func New(find func() []finder.SkillGroup, home string) Model {
+// starts. home is used to tilde-shorten source paths. cwd is the working
+// directory at startup, used as the root for copy destinations.
+func New(find func() []finder.SkillGroup, home, cwd string) Model {
 	return Model{
 		find: func() []SkillEntry {
 			return flattenGroups(find(), home)
@@ -66,6 +81,7 @@ func New(find func() []finder.SkillGroup, home string) Model {
 		loading:  true,
 		width:    defaultWidth,
 		height:   defaultHeight,
+		cwd:      cwd,
 	}
 }
 
@@ -76,7 +92,7 @@ func flattenGroups(groups []finder.SkillGroup, home string) []SkillEntry {
 	for _, g := range groups {
 		short := strings.Replace(g.Source, home, "~", 1)
 		for _, s := range g.Skills {
-			entries = append(entries, SkillEntry{Name: s, ShortSource: short})
+			entries = append(entries, SkillEntry{Name: s, ShortSource: short, FullSource: g.Source})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -128,6 +144,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeConfirmDelete:
+		if msg.Type == tea.KeyRunes && string(msg.Runes) == "D" {
+			toDelete := make(map[int]bool)
+			for idx := range m.selected {
+				if idx < len(m.entries) {
+					e := m.entries[idx]
+					os.RemoveAll(filepath.Join(e.FullSource, e.Name)) //nolint:errcheck
+					toDelete[idx] = true
+				}
+			}
+			var remaining []SkillEntry
+			for i, e := range m.entries {
+				if !toDelete[i] {
+					remaining = append(remaining, e)
+				}
+			}
+			m.entries = remaining
+			m.selected = make(map[int]bool)
+			m.mode = modeNormal
+			m.clampCursor()
+			m.clampOffset()
+			return m, nil
+		}
+		m.mode = modeNormal
+		return m, nil
+
+	case modeChooseCopyDest:
+		if msg.Type == tea.KeyRunes {
+			switch string(msg.Runes) {
+			case "1":
+				m.executeCopy([]string{filepath.Join(m.cwd, ".agents", "skills")})
+				m.mode = modeNormal
+				return m, nil
+			case "2":
+				m.executeCopy([]string{filepath.Join(m.cwd, ".claude", "skills")})
+				m.mode = modeNormal
+				return m, nil
+			case "3":
+				m.executeCopy([]string{
+					filepath.Join(m.cwd, ".agents", "skills"),
+					filepath.Join(m.cwd, ".claude", "skills"),
+				})
+				m.mode = modeNormal
+				return m, nil
+			}
+		}
+		m.mode = modeNormal
+		return m, nil
+	}
+
+	// modeNormal
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		m.quitting = true
@@ -180,17 +248,62 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyRunes:
-		runes := string(msg.Runes)
-		if runes == "q" && m.filter == "" {
-			m.quitting = true
-			return m, tea.Quit
+		r := string(msg.Runes)
+		// D and C are action shortcuts only when filter is empty (otherwise typed into filter).
+		if m.filter == "" {
+			switch r {
+			case "q":
+				m.quitting = true
+				return m, tea.Quit
+			case "D":
+				if len(m.selected) > 0 {
+					m.mode = modeConfirmDelete
+				}
+				return m, nil
+			case "C":
+				m.mode = modeChooseCopyDest
+				return m, nil
+			}
 		}
-		m.filter += runes
+		m.filter += r
 		m.clampCursor()
 		m.clampOffset()
 		return m, nil
 	}
 	return m, nil
+}
+
+// executeCopy copies the appropriate target entries to all given destination roots.
+// If entries are selected, they are all copied; otherwise the cursor row is used.
+func (m Model) executeCopy(destinations []string) {
+	var targets []SkillEntry
+	if len(m.selected) > 0 {
+		for idx := range m.selected {
+			if idx < len(m.entries) {
+				targets = append(targets, m.entries[idx])
+			}
+		}
+	} else {
+		visible := m.visibleEntries()
+		if len(visible) > 0 && m.cursor < len(visible) {
+			targets = []SkillEntry{visible[m.cursor]}
+		}
+	}
+	for _, e := range targets {
+		src := filepath.Join(e.FullSource, e.Name)
+		for _, dest := range destinations {
+			copySkillDir(src, filepath.Join(dest, e.Name)) //nolint:errcheck
+		}
+	}
+}
+
+// copySkillDir copies the src directory tree into dst using os.CopyFS.
+// If dst already exists the copy is skipped silently.
+func copySkillDir(src, dst string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	return os.CopyFS(dst, os.DirFS(src))
 }
 
 // View renders the current state within a rounded border box.
@@ -243,19 +356,26 @@ func (m Model) View() string {
 	// Separator before status.
 	inner.WriteString("\n")
 
-	// Status line.
+	// Status line — changes to reflect the current modal state.
 	var status string
 	selCount := len(m.selected)
-	if len(visible) == 0 {
-		status = "0 results  ·  esc clear  ·  q quit"
-	} else if selCount > 0 {
-		status = fmt.Sprintf("%d selected  ·  %d/%d  ·  ↑↓ navigate  ·  space toggle  ·  type to filter  ·  q quit",
-			selCount, m.cursor+1, len(visible))
-	} else {
-		status = fmt.Sprintf("%d/%d  ·  ↑↓ navigate  ·  space toggle  ·  type to filter  ·  esc clear  ·  q quit",
-			m.cursor+1, len(visible))
+	switch m.mode {
+	case modeConfirmDelete:
+		status = warnStyle.Render(fmt.Sprintf("⚠ Delete %d skill(s)? D to confirm · esc cancel", selCount))
+	case modeChooseCopyDest:
+		status = hintStyle.Render("Copy to: 1 .agents  2 .claude  3 both · esc cancel")
+	default:
+		if len(visible) == 0 {
+			status = hintStyle.Render("0 results  ·  esc clear  ·  q quit")
+		} else if selCount > 0 {
+			status = hintStyle.Render(fmt.Sprintf("%d selected  ·  %d/%d  ·  ↑↓ navigate  ·  space toggle  ·  D delete  ·  C copy  ·  q quit",
+				selCount, m.cursor+1, len(visible)))
+		} else {
+			status = hintStyle.Render(fmt.Sprintf("%d/%d  ·  ↑↓ navigate  ·  space toggle  ·  type to filter  ·  esc clear  ·  q quit",
+				m.cursor+1, len(visible)))
+		}
 	}
-	inner.WriteString(hintStyle.Render(status))
+	inner.WriteString(status)
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

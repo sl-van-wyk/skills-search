@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 )
 
 const fakeHome = "/home/user"
+const fakeCwd = "/tmp/fake-cwd"
 
 func testGroups() []finder.SkillGroup {
 	return []finder.SkillGroup{
@@ -23,7 +26,7 @@ func testGroups() []finder.SkillGroup {
 
 // loaded returns a Model that has already received its walk results.
 func loaded(groups func() []finder.SkillGroup) Model {
-	m := New(groups, fakeHome)
+	m := New(groups, fakeHome, fakeCwd)
 	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
 	return next.(Model)
 }
@@ -34,7 +37,7 @@ func runes(s string) tea.KeyMsg {
 }
 
 func TestViewLoadingState(t *testing.T) {
-	m := New(testGroups, fakeHome)
+	m := New(testGroups, fakeHome, fakeCwd)
 	if !strings.Contains(m.View(), "Searching") {
 		t.Errorf("loading view = %q, want mention of searching", m.View())
 	}
@@ -61,6 +64,16 @@ func TestFlattenGroups(t *testing.T) {
 		}
 		if !strings.HasPrefix(e.ShortSource, "~") {
 			t.Errorf("ShortSource %q should start with ~", e.ShortSource)
+		}
+	}
+
+	// FullSource should be the unexpanded path.
+	for _, e := range entries {
+		if strings.HasPrefix(e.FullSource, "~") {
+			t.Errorf("FullSource %q should not be tilde-shortened", e.FullSource)
+		}
+		if e.FullSource == "" {
+			t.Errorf("FullSource should not be empty for entry %q", e.Name)
 		}
 	}
 }
@@ -420,7 +433,7 @@ func TestQuitOnCtrlC(t *testing.T) {
 }
 
 func TestTypeToFilterEndToEnd(t *testing.T) {
-	tm := teatest.NewTestModel(t, New(testGroups, fakeHome),
+	tm := teatest.NewTestModel(t, New(testGroups, fakeHome, fakeCwd),
 		teatest.WithInitialTermSize(80, 24))
 
 	tm.Type("fast")
@@ -441,7 +454,7 @@ func TestLoadingThenResults(t *testing.T) {
 		return testGroups()
 	}
 
-	tm := teatest.NewTestModel(t, New(blocking, fakeHome),
+	tm := teatest.NewTestModel(t, New(blocking, fakeHome, fakeCwd),
 		teatest.WithInitialTermSize(80, 24))
 
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
@@ -456,4 +469,210 @@ func TestLoadingThenResults(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+// --- delete action tests ---
+
+func TestDeleteNoOpWhenNothingSelected(t *testing.T) {
+	m := loaded(testGroups)
+	next, _ := m.Update(runes("D"))
+	out := next.(Model).View()
+	// Nothing selected — D should not enter confirm state.
+	if strings.Contains(out, "Delete") {
+		t.Errorf("pressing D with nothing selected should be a no-op, got:\n%s", out)
+	}
+	if next.(Model).mode != modeNormal {
+		t.Errorf("mode should remain modeNormal after no-op D, got %v", next.(Model).mode)
+	}
+}
+
+func TestDeleteEntersConfirmState(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space()) // select cursor row
+	model, _ = model.(Model).Update(runes("D"))
+	out := model.(Model).View()
+	if !strings.Contains(out, "Delete") {
+		t.Errorf("pressing D with selection should show delete confirmation:\n%s", out)
+	}
+	if model.(Model).mode != modeConfirmDelete {
+		t.Errorf("mode should be modeConfirmDelete, got %v", model.(Model).mode)
+	}
+}
+
+func TestDeleteCancelledByOtherKey(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space()) // select cursor row
+	model, _ = model.(Model).Update(runes("D"))
+	// Cancel with esc.
+	model, _ = model.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.(Model).mode != modeNormal {
+		t.Errorf("mode should return to modeNormal after cancel, got %v", model.(Model).mode)
+	}
+	if len(model.(Model).entries) != 3 {
+		t.Errorf("entries should be unchanged after cancel, got %d", len(model.(Model).entries))
+	}
+	// Selection should still be present.
+	if len(model.(Model).selected) == 0 {
+		t.Errorf("selection should be unchanged after cancel")
+	}
+}
+
+func TestDeleteConfirmedRemovesEntries(t *testing.T) {
+	// Create a real temp dir with a skill subdirectory.
+	tmp := t.TempDir()
+	skillName := "test-skill"
+	skillDir := filepath.Join(tmp, skillName)
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# test"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	groups := func() []finder.SkillGroup {
+		return []finder.SkillGroup{
+			{Source: tmp, Skills: []string{skillName}},
+		}
+	}
+	m := loaded(groups)
+	if len(m.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(m.entries))
+	}
+
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space())     // select the skill
+	model, _ = model.(Model).Update(runes("D"))  // enter confirm
+	model, _ = model.(Model).Update(runes("D"))  // confirm delete
+
+	if len(model.(Model).entries) != 0 {
+		t.Errorf("entry should be removed from model after delete, got %d entries", len(model.(Model).entries))
+	}
+	if len(model.(Model).selected) != 0 {
+		t.Errorf("selection should be cleared after delete, got %d selected", len(model.(Model).selected))
+	}
+	if model.(Model).mode != modeNormal {
+		t.Errorf("mode should return to modeNormal after delete, got %v", model.(Model).mode)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Errorf("skill directory should have been deleted from filesystem")
+	}
+}
+
+// --- copy action tests ---
+
+func TestCopyEntersDestPrompt(t *testing.T) {
+	m := loaded(testGroups)
+	next, _ := m.Update(runes("C"))
+	out := next.(Model).View()
+	if !strings.Contains(out, "Copy to") {
+		t.Errorf("pressing C should show copy destination prompt:\n%s", out)
+	}
+	if next.(Model).mode != modeChooseCopyDest {
+		t.Errorf("mode should be modeChooseCopyDest, got %v", next.(Model).mode)
+	}
+}
+
+func TestCopyCancelledByOtherKey(t *testing.T) {
+	m := loaded(testGroups)
+	var model tea.Model = m
+	model, _ = model.(Model).Update(runes("C"))
+	model, _ = model.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.(Model).mode != modeNormal {
+		t.Errorf("mode should return to modeNormal after cancel, got %v", model.(Model).mode)
+	}
+}
+
+func TestCopyUsesSelectionWhenPresent(t *testing.T) {
+	// Set up a real source skill dir.
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	skillName := "my-skill"
+	if err := os.Mkdir(filepath.Join(srcRoot, skillName), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRoot, skillName, "skill.md"), []byte("# hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	groups := func() []finder.SkillGroup {
+		return []finder.SkillGroup{{Source: srcRoot, Skills: []string{skillName}}}
+	}
+	m := New(groups, fakeHome, dstRoot)
+	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
+	m = next.(Model)
+
+	var model tea.Model = m
+	model, _ = model.(Model).Update(space())    // select the skill
+	model, _ = model.(Model).Update(runes("C")) // enter copy prompt
+	model, _ = model.(Model).Update(runes("1")) // copy to .agents/skills
+
+	dst := filepath.Join(dstRoot, ".agents", "skills", skillName)
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Errorf("expected skill to be copied to %s", dst)
+	}
+	if model.(Model).mode != modeNormal {
+		t.Errorf("mode should return to modeNormal after copy, got %v", model.(Model).mode)
+	}
+}
+
+func TestCopyUsesCursorRowWhenNothingSelected(t *testing.T) {
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	skillName := "cursor-skill"
+	if err := os.Mkdir(filepath.Join(srcRoot, skillName), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRoot, skillName, "skill.md"), []byte("# hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	groups := func() []finder.SkillGroup {
+		return []finder.SkillGroup{{Source: srcRoot, Skills: []string{skillName}}}
+	}
+	m := New(groups, fakeHome, dstRoot)
+	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
+	m = next.(Model)
+
+	// No selection — cursor row should be used.
+	var model tea.Model = m
+	model, _ = model.(Model).Update(runes("C")) // enter copy prompt
+	model, _ = model.(Model).Update(runes("2")) // copy to .claude/skills
+
+	dst := filepath.Join(dstRoot, ".claude", "skills", skillName)
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Errorf("expected cursor-row skill to be copied to %s", dst)
+	}
+}
+
+func TestCopySkipsExistingDestination(t *testing.T) {
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	skillName := "existing-skill"
+	if err := os.Mkdir(filepath.Join(srcRoot, skillName), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+
+	// Pre-create the destination directory.
+	dstSkillDir := filepath.Join(dstRoot, ".agents", "skills", skillName)
+	if err := os.MkdirAll(dstSkillDir, 0o755); err != nil {
+		t.Fatalf("mkdir dst: %v", err)
+	}
+
+	groups := func() []finder.SkillGroup {
+		return []finder.SkillGroup{{Source: srcRoot, Skills: []string{skillName}}}
+	}
+	m := New(groups, fakeHome, dstRoot)
+	next, _ := m.Update(foundMsg{entries: flattenGroups(groups(), fakeHome)})
+	m = next.(Model)
+
+	// Copy should skip without error.
+	var model tea.Model = m
+	model, _ = model.(Model).Update(runes("C"))
+	model, _ = model.(Model).Update(runes("1"))
+
+	if model.(Model).mode != modeNormal {
+		t.Errorf("mode should return to modeNormal even when dst exists, got %v", model.(Model).mode)
+	}
 }
