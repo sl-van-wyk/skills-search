@@ -14,8 +14,8 @@ import (
 	"github.com/sl-van-wyk/skills-search/finder"
 )
 
-// chrome: border×2 + banner(1) + divider(1) + filter(1) + spacer(1) + separator(1) + status(1) = 8 fixed rows.
-const chrome = 8
+// chrome: border×2 + banner(1) + divider(1) + searchbox(3) + separator(1) + status(1) = 10 fixed rows.
+const chrome = 10
 
 const bannerText = "S K I L L S   S E A R C H"
 
@@ -120,6 +120,21 @@ func (m Model) renderBanner() string {
 	b.WriteString(bannerStyle.Render(strings.Repeat("─", innerWidth)))
 	b.WriteString("\n")
 	return b.String()
+}
+
+// renderSearchBox returns a bordered input field with a placeholder when empty.
+func (m Model) renderSearchBox() string {
+	var input string
+	if m.filter == "" {
+		input = filterStyle.Render("> ") + hintStyle.Render("type to filter…")
+	} else {
+		input = filterStyle.Render("> " + m.filter)
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("8")).
+		Width(m.width - 4).
+		Render(input)
 }
 
 // listHeight is the number of rows available for skill entries.
@@ -363,8 +378,8 @@ func (m Model) View() string {
 	var inner strings.Builder
 
 	inner.WriteString(m.renderBanner())
-	inner.WriteString(filterStyle.Render("> " + m.filter))
-	inner.WriteString("\n\n")
+	inner.WriteString(m.renderSearchBox())
+	inner.WriteString("\n")
 
 	visible := m.visibleEntries()
 	lh := m.listHeight()
