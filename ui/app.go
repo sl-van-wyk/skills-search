@@ -14,8 +14,10 @@ import (
 	"github.com/sl-van-wyk/skills-search/finder"
 )
 
-// chrome: border×2 + filter + spacer + separator + status = 6 fixed rows.
-const chrome = 6
+// chrome: border×2 + banner(1) + divider(1) + filter(1) + spacer(1) + separator(1) + status(1) = 8 fixed rows.
+const chrome = 8
+
+const bannerText = "S K I L L S   S E A R C H"
 
 // fallback dimensions before the first WindowSizeMsg arrives.
 const defaultWidth = 80
@@ -29,6 +31,7 @@ var (
 	hintStyle   = lipgloss.NewStyle().Faint(true)
 	emptyStyle  = lipgloss.NewStyle().Faint(true)
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	bannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 )
 
 type mode int
@@ -102,6 +105,21 @@ func flattenGroups(groups []finder.SkillGroup, home string) []SkillEntry {
 		return entries[i].ShortSource < entries[j].ShortSource
 	})
 	return entries
+}
+
+// renderBanner returns the ASCII art header, subtitle, and full-width divider.
+func (m Model) renderBanner() string {
+	var b strings.Builder
+	innerWidth := m.width - 4
+	pad := (innerWidth - len(bannerText)) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	b.WriteString(bannerStyle.Render(strings.Repeat(" ", pad) + bannerText))
+	b.WriteString("\n")
+	b.WriteString(bannerStyle.Render(strings.Repeat("─", innerWidth)))
+	b.WriteString("\n")
+	return b.String()
 }
 
 // listHeight is the number of rows available for skill entries.
@@ -339,11 +357,12 @@ func (m Model) View() string {
 		return lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Width(m.width - 2).
-			Render(emptyStyle.Render("Searching for skills…"))
+			Render(m.renderBanner() + emptyStyle.Render("Searching for skills…"))
 	}
 
 	var inner strings.Builder
 
+	inner.WriteString(m.renderBanner())
 	inner.WriteString(filterStyle.Render("> " + m.filter))
 	inner.WriteString("\n\n")
 
@@ -359,6 +378,7 @@ func (m Model) View() string {
 		inner.WriteString(emptyStyle.Render("No skills found"))
 		inner.WriteString("\n")
 	} else {
+		contentWidth := m.width - 4 // inner box width: outer - border×2
 		for i, e := range page {
 			absIdx := m.offset + i
 			fullIdx := m.entryIndex(e)
@@ -366,10 +386,20 @@ func (m Model) View() string {
 			if fullIdx >= 0 && m.selected[fullIdx] {
 				check = "[x]"
 			}
+			// Truncate source so the entry always fits on one line.
+			// namePartLen = "  " + check + " " + name (check is always 3 chars)
+			namePartLen := 6 + len(e.Name)
+			srcMaxWidth := contentWidth - namePartLen - 2 // -2 for "  " separator
+			src := e.ShortSource
+			if srcMaxWidth < 3 {
+				src = ""
+			} else if len(src) > srcMaxWidth {
+				src = "…" + src[len(src)-(srcMaxWidth-1):]
+			}
 			if absIdx == m.cursor {
-				inner.WriteString(cursorStyle.Render("▶ "+check+" "+e.Name) + "  " + sourceStyle.Render(e.ShortSource))
+				inner.WriteString(cursorStyle.Render("▶ "+check+" "+e.Name) + "  " + sourceStyle.Render(src))
 			} else {
-				inner.WriteString(nameStyle.Render("  "+check+" "+e.Name) + "  " + sourceStyle.Render(e.ShortSource))
+				inner.WriteString(nameStyle.Render("  "+check+" "+e.Name) + "  " + sourceStyle.Render(src))
 			}
 			inner.WriteString("\n")
 		}

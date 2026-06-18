@@ -28,7 +28,7 @@ func main() {
 		return finder.Walk(home)
 	}, home, cwd)
 
-	if _, err := tea.NewProgram(model).Run(); err != nil {
+	if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "skills-search:", err)
 		os.Exit(1)
 	}
