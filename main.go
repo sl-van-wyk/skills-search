@@ -1,5 +1,4 @@
-// Command skills-search is a terminal UI for browsing agent skills discovered
-// under the user's home directory.
+// Command skills-search is a TUI for browsing agent skills under the home directory.
 package main
 
 import (

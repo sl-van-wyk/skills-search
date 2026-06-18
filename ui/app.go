@@ -14,12 +14,10 @@ import (
 	"github.com/sl-van-wyk/skills-search/finder"
 )
 
-// chrome is the number of rows consumed by non-list elements:
-//
-//	border top (1) + filter row (1) + spacer (1) + separator (1) + status row (1) + border bottom (1)
+// chrome: border×2 + filter + spacer + separator + status = 6 fixed rows.
 const chrome = 6
 
-// default terminal dimensions used before the first WindowSizeMsg arrives.
+// fallback dimensions before the first WindowSizeMsg arrives.
 const defaultWidth = 80
 const defaultHeight = 24
 
@@ -53,8 +51,7 @@ type foundMsg struct {
 	entries []SkillEntry
 }
 
-// refreshedMsg carries the result of a silent background re-walk triggered
-// after a copy or delete action. Unlike foundMsg it does not affect loading state.
+// refreshedMsg is a silent background re-walk result; does not affect loading state.
 type refreshedMsg struct {
 	entries []SkillEntry
 }
@@ -63,7 +60,7 @@ type refreshedMsg struct {
 type Model struct {
 	find     func() []SkillEntry
 	entries  []SkillEntry
-	selected map[int]bool // keys are indices into m.entries (persists through filter changes)
+	selected map[int]bool // indices into m.entries; stable across filter changes
 	filter   string
 	cursor   int
 	offset   int // first visible row index (viewport scroll position)
@@ -75,9 +72,7 @@ type Model struct {
 	cwd      string // working directory at startup, used as copy-destination root
 }
 
-// New returns a Model. find is called once asynchronously after the program
-// starts. home is used to tilde-shorten source paths. cwd is the working
-// directory at startup, used as the root for copy destinations.
+// New returns a Model. home tilde-shortens source paths; cwd is the copy-destination root.
 func New(find func() []finder.SkillGroup, home, cwd string) Model {
 	return Model{
 		find: func() []SkillEntry {
@@ -91,8 +86,7 @@ func New(find func() []finder.SkillGroup, home, cwd string) Model {
 	}
 }
 
-// flattenGroups converts grouped skill results into a flat sorted list.
-// Sorted by name then source for stable output.
+// flattenGroups flattens SkillGroups into a flat list sorted by name then source.
 func flattenGroups(groups []finder.SkillGroup, home string) []SkillEntry {
 	var entries []SkillEntry
 	for _, g := range groups {
@@ -127,14 +121,12 @@ func (m Model) Init() tea.Cmd {
 	}
 }
 
-// refreshCmd returns a Cmd that re-walks the filesystem in the background and
-// delivers a refreshedMsg. Unlike Init, it never sets loading state.
+// refreshCmd fires a background re-walk without touching loading state.
 func (m Model) refreshCmd() tea.Cmd {
 	find := m.find
 	return func() tea.Msg { return refreshedMsg{entries: find()} }
 }
 
-// Update handles incoming messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case foundMsg:
@@ -307,8 +299,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// executeCopy copies the appropriate target entries to all given destination roots.
-// If entries are selected, they are all copied; otherwise the cursor row is used.
+// executeCopy copies selected entries (or the cursor row) to each destination root.
 func (m Model) executeCopy(destinations []string) {
 	var targets []SkillEntry
 	if len(m.selected) > 0 {
@@ -331,8 +322,7 @@ func (m Model) executeCopy(destinations []string) {
 	}
 }
 
-// copySkillDir copies the src directory tree into dst using os.CopyFS.
-// If dst already exists the copy is skipped silently.
+// copySkillDir copies src into dst; no-ops if dst already exists.
 func copySkillDir(src, dst string) error {
 	if _, err := os.Stat(dst); err == nil {
 		return nil
@@ -354,11 +344,9 @@ func (m Model) View() string {
 
 	var inner strings.Builder
 
-	// Filter line.
 	inner.WriteString(filterStyle.Render("> " + m.filter))
 	inner.WriteString("\n\n")
 
-	// Skill rows — sliced to the viewport window.
 	visible := m.visibleEntries()
 	lh := m.listHeight()
 	end := m.offset + lh
@@ -387,10 +375,8 @@ func (m Model) View() string {
 		}
 	}
 
-	// Separator before status.
 	inner.WriteString("\n")
 
-	// Status line — changes to reflect the current modal state.
 	var status string
 	selCount := len(m.selected)
 	switch m.mode {
@@ -417,8 +403,7 @@ func (m Model) View() string {
 		Render(inner.String())
 }
 
-// visibleEntries returns entries filtered by the current substring filter
-// (case-insensitive on name only).
+// visibleEntries returns entries matching the filter (case-insensitive, name only).
 func (m Model) visibleEntries() []SkillEntry {
 	if m.filter == "" {
 		return m.entries
@@ -433,12 +418,10 @@ func (m Model) visibleEntries() []SkillEntry {
 	return out
 }
 
-// selectableCount is the total number of currently visible entries.
 func (m Model) selectableCount() int {
 	return len(m.visibleEntries())
 }
 
-// clampCursor keeps the cursor within [0, selectableCount-1].
 func (m *Model) clampCursor() {
 	max := m.selectableCount()
 	if max == 0 {
@@ -450,8 +433,7 @@ func (m *Model) clampCursor() {
 	}
 }
 
-// entryIndex returns the index of e in m.entries by matching Name+ShortSource.
-// Returns -1 if not found.
+// entryIndex finds e in m.entries by Name+ShortSource; returns -1 if absent.
 func (m Model) entryIndex(e SkillEntry) int {
 	for i, entry := range m.entries {
 		if entry.Name == e.Name && entry.ShortSource == e.ShortSource {
@@ -461,21 +443,17 @@ func (m Model) entryIndex(e SkillEntry) int {
 	return -1
 }
 
-// clampOffset adjusts the viewport scroll offset to keep the cursor visible
-// and ensures no trailing blank rows when the list is shorter than the viewport.
+// clampOffset keeps the cursor visible and prevents blank rows at the top.
 func (m *Model) clampOffset() {
 	lh := m.listHeight()
 	total := m.selectableCount()
 
-	// Scroll down: cursor has moved below the visible window.
 	if m.cursor >= m.offset+lh {
 		m.offset = m.cursor - lh + 1
 	}
-	// Scroll up: cursor has moved above the visible window.
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
-	// Clamp so we never show blank rows at the top when the list shrinks.
 	maxOffset := total - lh
 	if maxOffset < 0 {
 		maxOffset = 0
