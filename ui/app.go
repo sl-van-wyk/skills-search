@@ -26,7 +26,7 @@ const defaultHeight = 24
 var (
 	nameStyle   = lipgloss.NewStyle()
 	sourceStyle = lipgloss.NewStyle().Faint(true)
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 	filterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	hintStyle   = lipgloss.NewStyle().Faint(true)
 	emptyStyle  = lipgloss.NewStyle().Faint(true)
