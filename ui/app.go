@@ -14,10 +14,17 @@ import (
 	"github.com/sl-van-wyk/skills-search/finder"
 )
 
-// chrome: border×2 + banner(1) + divider(1) + searchbox(3) + separator(1) + status(1) = 10 fixed rows.
-const chrome = 10
+// chrome reserves rows around the scrollable list: banner, divider, searchbox, gaps, and status.
+var chrome = len(bannerArt) + 7
 
-const bannerText = "S K I L L S   S E A R C H"
+var bannerArt = []string{
+	"███████╗██╗  ██╗██╗██╗     ██╗     ███████╗    ███████╗███████╗ █████╗ ██████╗  ██████╗██╗  ██╗",
+	"██╔════╝██║ ██╔╝██║██║     ██║     ██╔════╝    ██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝██║  ██║",
+	"███████╗█████╔╝ ██║██║     ██║     ███████╗    ███████╗█████╗  ███████║██████╔╝██║     ███████║",
+	"╚════██║██╔═██╗ ██║██║     ██║     ╚════██║    ╚════██║██╔══╝  ██╔══██║██╔══██╗██║     ██╔══██║",
+	"███████║██║  ██╗██║███████╗███████╗███████║    ███████║███████╗██║  ██║██║  ██║╚██████╗██║  ██║",
+	"╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝    ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
+}
 
 // fallback dimensions before the first WindowSizeMsg arrives.
 const defaultWidth = 80
@@ -31,7 +38,7 @@ var (
 	hintStyle   = lipgloss.NewStyle().Faint(true)
 	emptyStyle  = lipgloss.NewStyle().Faint(true)
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	bannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	bannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#c6d0f5"))
 )
 
 type mode int
@@ -107,18 +114,41 @@ func flattenGroups(groups []finder.SkillGroup, home string) []SkillEntry {
 	return entries
 }
 
-// renderBanner returns the ASCII art header, subtitle, and full-width divider.
+// renderBanner returns the ASCII art header and full-width divider.
 func (m Model) renderBanner() string {
 	var b strings.Builder
-	innerWidth := m.width - 4
-	pad := (innerWidth - len(bannerText)) / 2
-	if pad < 0 {
-		pad = 0
+	innerWidth := m.width - 1 // avoid terminal auto-wrap in the last column
+	if innerWidth < 1 {
+		innerWidth = 1
 	}
-	b.WriteString(bannerStyle.Render(strings.Repeat(" ", pad) + bannerText))
-	b.WriteString("\n")
+	for _, line := range bannerArt {
+		line = truncateToWidth(line, innerWidth)
+		pad := (innerWidth - lipgloss.Width(line)) / 2
+		if pad < 0 {
+			pad = 0
+		}
+		b.WriteString(bannerStyle.Render(strings.Repeat(" ", pad) + line))
+		b.WriteString("\n")
+	}
 	b.WriteString(bannerStyle.Render(strings.Repeat("─", innerWidth)))
 	b.WriteString("\n")
+	return b.String()
+}
+
+func truncateToWidth(s string, maxWidth int) string {
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if width+rw > maxWidth {
+			break
+		}
+		b.WriteRune(r)
+		width += rw
+	}
 	return b.String()
 }
 
@@ -363,16 +393,13 @@ func copySkillDir(src, dst string) error {
 	return os.CopyFS(dst, os.DirFS(src))
 }
 
-// View renders the current state within a rounded border box.
+// View renders the current state.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
 	if m.loading {
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			Width(m.width - 2).
-			Render(m.renderBanner() + emptyStyle.Render("Searching for skills…"))
+		return m.renderBanner() + emptyStyle.Render("Searching for skills…")
 	}
 
 	var inner strings.Builder
@@ -393,7 +420,7 @@ func (m Model) View() string {
 		inner.WriteString(emptyStyle.Render("No skills found"))
 		inner.WriteString("\n")
 	} else {
-		contentWidth := m.width - 4 // inner box width: outer - border×2
+		contentWidth := m.width
 		for i, e := range page {
 			absIdx := m.offset + i
 			fullIdx := m.entryIndex(e)
@@ -442,10 +469,7 @@ func (m Model) View() string {
 	}
 	inner.WriteString(status)
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Width(m.width - 2).
-		Render(inner.String())
+	return inner.String()
 }
 
 // visibleEntries returns entries matching the filter (case-insensitive, name only).

@@ -333,8 +333,8 @@ func loadedWithHeight(groups func() []finder.SkillGroup, height int) Model {
 }
 
 func TestViewportScrollDown(t *testing.T) {
-	// 3 entries, height=8 → listHeight=2, so only 2 rows fit at a time.
-	m := loadedWithHeight(testGroups, 8)
+	// 3 entries, height=15 → listHeight=2, so only 2 rows fit at a time.
+	m := loadedWithHeight(testGroups, 15)
 	if m.listHeight() != 2 {
 		t.Fatalf("listHeight = %d, want 2", m.listHeight())
 	}
@@ -357,7 +357,7 @@ func TestViewportScrollDown(t *testing.T) {
 }
 
 func TestViewportScrollUp(t *testing.T) {
-	m := loadedWithHeight(testGroups, 8) // listHeight=2
+	m := loadedWithHeight(testGroups, 15) // listHeight=2
 
 	// Scroll down to last entry first.
 	var model tea.Model = m
@@ -380,7 +380,7 @@ func TestViewportScrollUp(t *testing.T) {
 func TestViewportOffsetClampedOnFilter(t *testing.T) {
 	// Start with 3 entries in a small viewport, scroll to bottom, then filter
 	// down to 1 entry — offset must clamp so no blank rows appear.
-	m := loadedWithHeight(testGroups, 8) // listHeight=2
+	m := loadedWithHeight(testGroups, 15) // listHeight=2
 
 	var model tea.Model = m
 	// Move to last entry (index 2 of 3).
@@ -542,9 +542,9 @@ func TestDeleteConfirmedRemovesEntries(t *testing.T) {
 	}
 
 	var model tea.Model = m
-	model, _ = model.(Model).Update(space())     // select the skill
-	model, _ = model.(Model).Update(runes("D"))  // enter confirm
-	model, _ = model.(Model).Update(runes("D"))  // confirm delete
+	model, _ = model.(Model).Update(space())    // select the skill
+	model, _ = model.(Model).Update(runes("D")) // enter confirm
+	model, _ = model.(Model).Update(runes("D")) // confirm delete
 
 	if len(model.(Model).entries) != 0 {
 		t.Errorf("entry should be removed from model after delete, got %d entries", len(model.(Model).entries))
@@ -713,8 +713,8 @@ func TestRefreshAfterDelete(t *testing.T) {
 
 	var model tea.Model = m
 	var cmd tea.Cmd
-	model, _ = model.(Model).Update(space())    // select
-	model, _ = model.(Model).Update(runes("D")) // enter confirm
+	model, _ = model.(Model).Update(space())      // select
+	model, _ = model.(Model).Update(runes("D"))   // enter confirm
 	model, cmd = model.(Model).Update(runes("D")) // confirm delete
 
 	if cmd == nil {
